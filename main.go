@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -48,6 +49,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 	const maxChirpLength = 140
+	bannedWords := [3]string{"kerfuffle", "sharbert", "fornax"}
 
 	type parameters struct {
 		Body string `json:"body"`
@@ -70,11 +72,31 @@ func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bannedSet := make(map[string]struct{}, len(bannedWords))
+
+	for _, b := range bannedWords {
+		bannedSet[strings.ToLower(b)] = struct{}{}
+	}
+
+	// split the body into words (preserves original casing/punctuation in output)
+	words := strings.Fields(params.Body)
+
+	for i, w := range words {
+		// compare lowercased
+		if _, isBanned := bannedSet[strings.ToLower(w)]; isBanned {
+			words[i] = "****"
+		}
+	}
+
+	cleanBody := strings.Join(words, " ")
+
 	type returnVals struct {
-		Valid bool `json:"valid"`
+		Valid        bool   `json:"valid"`
+		Cleaned_body string `json:"cleaned_body"`
 	}
 	respBody := returnVals{
-		Valid: true,
+		Valid:        true,
+		Cleaned_body: cleanBody,
 	}
 	data, err := json.Marshal(respBody)
 	if err != nil {
