@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,11 +16,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) numRequests(w http.ResponseWriter, r *http.Request) {
 
-	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Type", "text/html")
 
 	hits := cfg.fileserverHits.Load()
 
-	fmt.Fprintf(w, "Hits: %d", hits)
+	htmlContent := fmt.Sprintf("<html><body><h1>Welcome, Chirpy Admin</h1><p>Chirpy has been visited %d times!</p></body></html>", hits)
+
+	w.Write([]byte(htmlContent))
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +45,49 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
+
+	const maxChirpLength = 140
+
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if len(params.Body) > maxChirpLength {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Chirp is too long"})
+		return
+	}
+
+	type returnVals struct {
+		Valid bool `json:"valid"`
+	}
+	respBody := returnVals{
+		Valid: true,
+	}
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+
+}
+
 func main() {
 	const port = "8080"
 	const filepathRoot = "."
@@ -50,9 +96,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
-	mux.HandleFunc("GET /healthz", handler)
-	mux.HandleFunc("GET /metrics", cfg.numRequests)
-	mux.HandleFunc("POST /reset", cfg.resetHandler)
+	mux.HandleFunc("GET /api/healthz", handler)
+	mux.HandleFunc("GET /admin/metrics", cfg.numRequests)
+	mux.HandleFunc("POST /admin/reset", cfg.resetHandler)
+	mux.HandleFunc("POST /api/validate_chirp", jsonRequestHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
