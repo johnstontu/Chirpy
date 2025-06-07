@@ -1,12 +1,17 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/johnstontu/Chirpy/internal/database"
+	_ "github.com/lib/pq"
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +41,7 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -111,10 +117,20 @@ func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Printf("Error connecting to postgres: %s", err)
+		return
+	}
+	dbQueries := database.New(db)
+
 	const port = "8080"
 	const filepathRoot = "."
 
 	var cfg apiConfig
+	cfg.dbQueries = dbQueries
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
