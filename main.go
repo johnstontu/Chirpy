@@ -9,7 +9,11 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/joho/godotenv"
+
+	"github.com/google/uuid"
 	"github.com/johnstontu/Chirpy/internal/database"
 	_ "github.com/lib/pq"
 )
@@ -32,6 +36,21 @@ func (cfg *apiConfig) numRequests(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
+
+	if cfg.platform != "dev" {
+		log.Printf("403 forbidden")
+		w.WriteHeader(403)
+		return
+	}
+
+	err := cfg.dbQueries.DeleteUsers(r.Context())
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
 	cfg.fileserverHits.Store(0)
 
 	w.Header().Set("Content-Type", "text/plain")
@@ -42,6 +61,7 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -116,7 +136,60 @@ func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
+
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("Error running query: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	respBody := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	w.Write(data)
+
+}
+
 func main() {
+
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
@@ -131,6 +204,7 @@ func main() {
 
 	var cfg apiConfig
 	cfg.dbQueries = dbQueries
+	cfg.platform = os.Getenv("PLATFORM")
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
@@ -138,6 +212,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", cfg.numRequests)
 	mux.HandleFunc("POST /admin/reset", cfg.resetHandler)
 	mux.HandleFunc("POST /api/validate_chirp", jsonRequestHandler)
+	mux.HandleFunc("POST /api/users", cfg.handleUser)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
