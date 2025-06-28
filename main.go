@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -184,6 +185,132 @@ func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
+
+	const maxChirpLength = 140
+	bannedWords := [3]string{"kerfuffle", "sharbert", "fornax"}
+
+	type parameters struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	type chirpy struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	if len(params.Body) > maxChirpLength {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Chirp is too long"})
+		return
+	}
+
+	bannedSet := make(map[string]struct{}, len(bannedWords))
+
+	for _, b := range bannedWords {
+		bannedSet[strings.ToLower(b)] = struct{}{}
+	}
+
+	// split the body into words (preserves original casing/punctuation in output)
+	words := strings.Fields(params.Body)
+
+	for i, w := range words {
+		// compare lowercased
+		if _, isBanned := bannedSet[strings.ToLower(w)]; isBanned {
+			words[i] = "****"
+		}
+	}
+
+	cleanBody := strings.Join(words, " ")
+
+	chirp, err := cfg.dbQueries.CreateChirp(
+		r.Context(),
+		database.CreateChirpParams{
+			Body:   cleanBody,
+			UserID: params.UserID,
+		})
+	if err != nil {
+		log.Printf("Error running query: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	respBody := chirpy{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	w.Write(data)
+
+}
+
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
+
+	dbChirps, err := cfg.dbQueries.GetChirps(
+		context.Background(),
+	)
+	if err != nil {
+		log.Printf("Error running query: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	type chirpy struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	respBody := make([]chirpy, 0, len(dbChirps))
+	for _, c := range dbChirps {
+		respBody = append(respBody, chirpy{
+			ID:        c.ID,
+			CreatedAt: c.CreatedAt,
+			UpdatedAt: c.UpdatedAt,
+			Body:      c.Body,
+			UserID:    c.UserID,
+		})
+	}
+
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -211,8 +338,9 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handler)
 	mux.HandleFunc("GET /admin/metrics", cfg.numRequests)
 	mux.HandleFunc("POST /admin/reset", cfg.resetHandler)
-	mux.HandleFunc("POST /api/validate_chirp", jsonRequestHandler)
 	mux.HandleFunc("POST /api/users", cfg.handleUser)
+	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
