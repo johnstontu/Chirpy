@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/google/uuid"
+	"github.com/johnstontu/Chirpy/internal/auth"
 	"github.com/johnstontu/Chirpy/internal/database"
 	_ "github.com/lib/pq"
 )
@@ -138,16 +139,18 @@ func jsonRequestHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID             uuid.UUID `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Email          string    `json:"email"`
+	HashedPassword string    `json:"hashed_password"`
 }
 
 func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
 
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -160,7 +163,17 @@ func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	hashPwd, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashPwd,
+	})
 	if err != nil {
 		log.Printf("Error running query: %s", err)
 		w.WriteHeader(500)
@@ -168,10 +181,11 @@ func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBody := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:             user.ID,
+		CreatedAt:      user.CreatedAt,
+		UpdatedAt:      user.UpdatedAt,
+		Email:          user.Email,
+		HashedPassword: user.HashedPassword,
 	}
 	data, err := json.Marshal(respBody)
 	if err != nil {
@@ -362,6 +376,61 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		http.Error(w, "user does not exist", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("DEBUG: fetched hashed password = %q", user.HashedPassword)
+
+	if user.HashedPassword == "unset" /* or == "unset" */ {
+		http.Error(w, "credentials not set; please reset your password", http.StatusUnauthorized)
+		return
+	}
+
+	err = auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil {
+		log.Printf("password mismatch: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	respBody := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -393,6 +462,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
 	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.getChirpByID)
+	mux.HandleFunc("POST /api/login", cfg.handleLogin)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
