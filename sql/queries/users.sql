@@ -16,3 +16,10 @@ DELETE FROM users;
 -- name: GetUserByEmail :one
 SELECT * FROM users
 WHERE email = $1;
+
+-- name: StoreUserToken :one
+UPDATE users
+SET token = $1,
+updated_at = NOW()
+WHERE email = $2
+RETURNING *;

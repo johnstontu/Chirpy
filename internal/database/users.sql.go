@@ -69,3 +69,30 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	)
 	return i, err
 }
+
+const storeUserToken = `-- name: StoreUserToken :one
+UPDATE users
+SET token = $1,
+updated_at = NOW()
+WHERE email = $2
+RETURNING id, created_at, updated_at, email, hashed_password, token
+`
+
+type StoreUserTokenParams struct {
+	Token string
+	Email string
+}
+
+func (q *Queries) StoreUserToken(ctx context.Context, arg StoreUserTokenParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, storeUserToken, arg.Token, arg.Email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+		&i.Token,
+	)
+	return i, err
+}

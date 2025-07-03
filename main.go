@@ -146,6 +146,7 @@ type User struct {
 	Email          string    `json:"email"`
 	HashedPassword string    `json:"hashed_password"`
 	Token          string    `json:"token"`
+	RefreshToken   string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
@@ -391,9 +392,8 @@ func (cfg *apiConfig) getChirpByID(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	type parameters struct {
-		Email      string `json:"email"`
-		Password   string `json:"password"`
-		Expiration int    `json:"expires_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -406,19 +406,25 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if params.Expiration == 0 {
-		params.Expiration = int(time.Hour)
-	}
-
 	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
 	if err != nil {
 		http.Error(w, "user does not exist", http.StatusBadRequest)
 		return
 	}
 
-	user.Token, err = auth.MakeJWT(user.ID, cfg.secret, time.Duration(params.Expiration))
+	user.Token, err = auth.MakeJWT(user.ID, cfg.secret, time.Duration(time.Hour*60))
 	if err != nil {
 		log.Printf("token issue: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	_, err = cfg.dbQueries.StoreUserToken(r.Context(), database.StoreUserTokenParams{
+		Token: user.Token,
+		Email: params.Email,
+	})
+	if err != nil {
+		log.Printf("error updating access token: %s", err)
 		w.WriteHeader(401)
 		return
 	}
@@ -437,13 +443,33 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respBody := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     user.Token,
+	r_token, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("error making new token: %s", err)
+		w.WriteHeader(401)
+		return
 	}
+
+	refresh_token, err := cfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     r_token,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+	})
+	if err != nil {
+		log.Printf("unable to make refresh token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	respBody := User{
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        user.Token,
+		RefreshToken: refresh_token.Token,
+	}
+
 	data, err := json.Marshal(respBody)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
@@ -453,6 +479,85 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	w.Write(data)
+
+}
+
+func (cfg *apiConfig) handleRefresh(w http.ResponseWriter, r *http.Request) {
+
+	bearertoken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	token, err := cfg.dbQueries.GetUserByRefreshToken(r.Context(), bearertoken)
+	if err != nil {
+		log.Printf("Error retrieving refresh token entry: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	if token.Token == "" {
+		log.Printf("Returned a blank refresh token")
+		w.WriteHeader(401)
+		return
+	}
+	if token.ExpiresAt.Before(time.Now()) {
+		log.Printf("token is expired")
+		w.WriteHeader(401)
+		return
+	}
+	if token.RevokedAt.Valid {
+		log.Printf("token is expired")
+		w.WriteHeader(401)
+		return
+	}
+
+	type Response struct {
+		Token string `json:"token"`
+	}
+
+	tokenSet, err := cfg.dbQueries.GetUserInfoByRefreshToken(r.Context(), token.Token)
+	if err != nil {
+		log.Printf("Error retrieving user token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+	respToken := tokenSet.UserToken.String
+	log.Println(respToken)
+
+	respBody := Response{
+		Token: respToken,
+	}
+
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+
+}
+
+func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
+
+	bearertoken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	_, err = cfg.dbQueries.RevokeRefreshToken(r.Context(), bearertoken)
+	if err != nil {
+		log.Printf("Error updating refresh token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(204)
 
 }
 
@@ -489,6 +594,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", cfg.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.getChirpByID)
 	mux.HandleFunc("POST /api/login", cfg.handleLogin)
+	mux.HandleFunc("POST /api/refresh", cfg.handleRefresh)
+	mux.HandleFunc("POST /api/revoke", cfg.handleRevoke)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
