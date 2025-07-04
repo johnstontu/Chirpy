@@ -561,6 +561,73 @@ func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+
+	bearertoken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "missing or malformed Authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	hashPwd, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	_, err = cfg.dbQueries.UpdateUserLogin(r.Context(), database.UpdateUserLoginParams{
+		Email:          params.Email,
+		HashedPassword: hashPwd,
+		Token:          bearertoken,
+	})
+	if err != nil {
+		log.Printf("Error updating user: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("Error running query: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	respBody := User{
+		ID:             user.ID,
+		CreatedAt:      user.CreatedAt,
+		UpdatedAt:      user.UpdatedAt,
+		Email:          user.Email,
+		HashedPassword: user.HashedPassword,
+	}
+	data, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -596,6 +663,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", cfg.handleLogin)
 	mux.HandleFunc("POST /api/refresh", cfg.handleRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.handleRevoke)
+	mux.HandleFunc("PUT /api/users", cfg.handleUpdateUser)
 
 	srv := &http.Server{
 		Addr:    ":" + port,

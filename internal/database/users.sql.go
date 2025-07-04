@@ -96,3 +96,31 @@ func (q *Queries) StoreUserToken(ctx context.Context, arg StoreUserTokenParams) 
 	)
 	return i, err
 }
+
+const updateUserLogin = `-- name: UpdateUserLogin :one
+UPDATE users
+SET email = $1,
+hashed_password = $2
+WHERE token = $3
+RETURNING id, created_at, updated_at, email, hashed_password, token
+`
+
+type UpdateUserLoginParams struct {
+	Email          string
+	HashedPassword string
+	Token          string
+}
+
+func (q *Queries) UpdateUserLogin(ctx context.Context, arg UpdateUserLoginParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserLogin, arg.Email, arg.HashedPassword, arg.Token)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+		&i.Token,
+	)
+	return i, err
+}

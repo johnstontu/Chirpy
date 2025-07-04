@@ -23,3 +23,10 @@ SET token = $1,
 updated_at = NOW()
 WHERE email = $2
 RETURNING *;
+
+-- name: UpdateUserLogin :one
+UPDATE users
+SET email = $1,
+hashed_password = $2
+WHERE token = $3
+RETURNING *;
