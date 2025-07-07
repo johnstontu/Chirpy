@@ -628,6 +628,60 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) HandleDeleteChirps(w http.ResponseWriter, r *http.Request) {
+
+	bearertoken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error retrieving token: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	id := r.PathValue("chirpID")
+	if id == "" {
+		http.Error(w, "missing chirp ID", http.StatusBadRequest)
+		return
+	}
+
+	chirpid, err := uuid.Parse(id)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		return
+	}
+
+	chirp, err := cfg.dbQueries.GetChirpByID(r.Context(), chirpid)
+	if err != nil {
+		log.Printf("Error retrieving chirp: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByToken(r.Context(), bearertoken)
+	if err != nil {
+		log.Printf("Error retrieving user: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+
+	if chirp.UserID != user.ID {
+		log.Printf("token mismatch: %s", err)
+		w.WriteHeader(403)
+		return
+	}
+
+	err = cfg.dbQueries.DeleteChirp(r.Context(), chirpid)
+	if err != nil {
+		log.Printf("Error deleting chirp: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(204)
+
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -664,6 +718,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", cfg.handleRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.handleRevoke)
 	mux.HandleFunc("PUT /api/users", cfg.handleUpdateUser)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.HandleDeleteChirps)
 
 	srv := &http.Server{
 		Addr:    ":" + port,

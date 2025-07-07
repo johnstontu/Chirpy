@@ -30,3 +30,7 @@ SET email = $1,
 hashed_password = $2
 WHERE token = $3
 RETURNING *;
+
+-- name: GetUserByToken :one
+SELECT * FROM users
+WHERE token = $1;
