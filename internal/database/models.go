@@ -35,4 +35,5 @@ type User struct {
 	Email          string
 	HashedPassword string
 	Token          string
+	IsChirpyRed    bool
 }

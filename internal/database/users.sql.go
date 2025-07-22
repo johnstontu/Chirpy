@@ -7,6 +7,8 @@ package database
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 const createUser = `-- name: CreateUser :one
@@ -19,7 +21,7 @@ VALUES (
     $2,
     $3
 )
-RETURNING id, created_at, updated_at, email, hashed_password, token
+RETURNING id, created_at, updated_at, email, hashed_password, token, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -38,6 +40,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.Email,
 		&i.HashedPassword,
 		&i.Token,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -52,7 +55,7 @@ func (q *Queries) DeleteUsers(ctx context.Context) error {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, created_at, updated_at, email, hashed_password, token FROM users
+SELECT id, created_at, updated_at, email, hashed_password, token, is_chirpy_red FROM users
 WHERE email = $1
 `
 
@@ -66,12 +69,33 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.Email,
 		&i.HashedPassword,
 		&i.Token,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, created_at, updated_at, email, hashed_password, token, is_chirpy_red FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+		&i.Token,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const getUserByToken = `-- name: GetUserByToken :one
-SELECT id, created_at, updated_at, email, hashed_password, token FROM users
+SELECT id, created_at, updated_at, email, hashed_password, token, is_chirpy_red FROM users
 WHERE token = $1
 `
 
@@ -85,6 +109,7 @@ func (q *Queries) GetUserByToken(ctx context.Context, token string) (User, error
 		&i.Email,
 		&i.HashedPassword,
 		&i.Token,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -94,7 +119,7 @@ UPDATE users
 SET token = $1,
 updated_at = NOW()
 WHERE email = $2
-RETURNING id, created_at, updated_at, email, hashed_password, token
+RETURNING id, created_at, updated_at, email, hashed_password, token, is_chirpy_red
 `
 
 type StoreUserTokenParams struct {
@@ -112,6 +137,7 @@ func (q *Queries) StoreUserToken(ctx context.Context, arg StoreUserTokenParams) 
 		&i.Email,
 		&i.HashedPassword,
 		&i.Token,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -121,7 +147,7 @@ UPDATE users
 SET email = $1,
 hashed_password = $2
 WHERE token = $3
-RETURNING id, created_at, updated_at, email, hashed_password, token
+RETURNING id, created_at, updated_at, email, hashed_password, token, is_chirpy_red
 `
 
 type UpdateUserLoginParams struct {
@@ -140,6 +166,29 @@ func (q *Queries) UpdateUserLogin(ctx context.Context, arg UpdateUserLoginParams
 		&i.Email,
 		&i.HashedPassword,
 		&i.Token,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const updateUserRed = `-- name: UpdateUserRed :one
+UPDATE users
+SET is_chirpy_red = true
+WHERE id = $1
+RETURNING id, created_at, updated_at, email, hashed_password, token, is_chirpy_red
+`
+
+func (q *Queries) UpdateUserRed(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserRed, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+		&i.Token,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }

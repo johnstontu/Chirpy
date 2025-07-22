@@ -34,3 +34,13 @@ RETURNING *;
 -- name: GetUserByToken :one
 SELECT * FROM users
 WHERE token = $1;
+
+-- name: UpdateUserRed :one
+UPDATE users
+SET is_chirpy_red = true
+WHERE id = $1
+RETURNING *;
+
+-- name: GetUserByID :one
+SELECT * FROM users
+WHERE id = $1;

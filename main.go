@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -65,6 +66,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	secret         string
+	polkakey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -147,6 +149,7 @@ type User struct {
 	HashedPassword string    `json:"hashed_password"`
 	Token          string    `json:"token"`
 	RefreshToken   string    `json:"refresh_token"`
+	IsUserRed      bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +192,7 @@ func (cfg *apiConfig) handleUser(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:      user.UpdatedAt,
 		Email:          user.Email,
 		HashedPassword: user.HashedPassword,
+		IsUserRed:      user.IsChirpyRed,
 	}
 	data, err := json.Marshal(respBody)
 	if err != nil {
@@ -298,6 +302,29 @@ func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
 
+	// 1) Parse optional author_id
+	authorParam := r.URL.Query().Get("author_id")
+	var (
+		filterByAuthor bool
+		authorID       uuid.UUID
+		err            error
+	)
+	if authorParam != "" {
+		authorID, err = uuid.Parse(authorParam)
+		if err != nil {
+			http.Error(w, "invalid author_id", http.StatusBadRequest)
+			return
+		}
+		filterByAuthor = true
+	}
+
+	// --- 2) Parse optional sort param ---
+	sortParam := r.URL.Query().Get("sort")
+	if sortParam != "" && sortParam != "asc" && sortParam != "desc" {
+		http.Error(w, "invalid sort parameter: must be 'asc' or 'desc'", http.StatusBadRequest)
+		return
+	}
+
 	dbChirps, err := cfg.dbQueries.GetChirps(
 		context.Background(),
 	)
@@ -317,6 +344,10 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
 
 	respBody := make([]chirpy, 0, len(dbChirps))
 	for _, c := range dbChirps {
+		if filterByAuthor && c.UserID != authorID {
+			continue
+		}
+
 		respBody = append(respBody, chirpy{
 			ID:        c.ID,
 			CreatedAt: c.CreatedAt,
@@ -324,6 +355,19 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
 			Body:      c.Body,
 			UserID:    c.UserID,
 		})
+	}
+
+	// --- 5) Sort in‑memory if requested ---
+	switch sortParam {
+	case "asc":
+		sort.Slice(respBody, func(i, j int) bool {
+			return respBody[i].CreatedAt.Before(respBody[j].CreatedAt)
+		})
+	case "desc":
+		sort.Slice(respBody, func(i, j int) bool {
+			return respBody[i].CreatedAt.After(respBody[j].CreatedAt)
+		})
+		// case "":  // no sort
 	}
 
 	data, err := json.Marshal(respBody)
@@ -468,6 +512,7 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        user.Token,
 		RefreshToken: refresh_token.Token,
+		IsUserRed:    user.IsChirpyRed,
 	}
 
 	data, err := json.Marshal(respBody)
@@ -615,6 +660,7 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:      user.UpdatedAt,
 		Email:          user.Email,
 		HashedPassword: user.HashedPassword,
+		IsUserRed:      user.IsChirpyRed,
 	}
 	data, err := json.Marshal(respBody)
 	if err != nil {
@@ -682,6 +728,76 @@ func (cfg *apiConfig) HandleDeleteChirps(w http.ResponseWriter, r *http.Request)
 
 }
 
+func (cfg *apiConfig) HandleUserUpgrade(w http.ResponseWriter, r *http.Request) {
+
+	apikey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		log.Printf("Error retrieving key: %s", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	if apikey != cfg.polkakey {
+		log.Println("wrong API Key")
+		log.Printf("api key: %s", apikey)
+		log.Printf("api key: %s", cfg.polkakey)
+		w.WriteHeader(401)
+		return
+	}
+
+	type parameters struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error deconding paramters: %s", err)
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+		return
+	}
+
+	event := params.Event
+	if event != "user.upgraded" {
+		log.Println("header is not user.upgraded")
+		w.WriteHeader(204)
+		return
+	}
+
+	user_id, err := uuid.Parse(params.Data.UserID)
+	if err != nil {
+		log.Printf("Error parsing ID: %s", err)
+		w.WriteHeader(400)
+		return
+
+	}
+
+	user, err := cfg.dbQueries.GetUserByID(r.Context(), user_id)
+	if err != nil {
+		log.Printf("Error retrieving user: %s", err)
+		w.WriteHeader(404)
+		return
+
+	}
+
+	_, err = cfg.dbQueries.UpdateUserRed(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("Error updating user: %s", err)
+		w.WriteHeader(404)
+		return
+
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(204)
+
+}
+
 func main() {
 
 	err := godotenv.Load()
@@ -704,6 +820,7 @@ func main() {
 	cfg.dbQueries = dbQueries
 	cfg.platform = os.Getenv("PLATFORM")
 	cfg.secret = os.Getenv("SECRET")
+	cfg.polkakey = os.Getenv("POLKA_KEY")
 
 	mux := http.NewServeMux()
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
@@ -719,6 +836,7 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", cfg.handleRevoke)
 	mux.HandleFunc("PUT /api/users", cfg.handleUpdateUser)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.HandleDeleteChirps)
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.HandleUserUpgrade)
 
 	srv := &http.Server{
 		Addr:    ":" + port,

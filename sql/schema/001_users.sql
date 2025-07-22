@@ -5,7 +5,8 @@ CREATE TABLE users (
     updated_at TIMESTAMP NOT NULL,
     email TEXT NOT NULL,
     hashed_password TEXT NOT NULL DEFAULT 'unset',
-    token TEXT NOT NULL
+    token TEXT NOT NULL,
+    is_chirpy_red BOOLEAN NOT NULL DEFAULT false
 );
 
 -- +goose Down
